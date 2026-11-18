@@ -229,10 +229,10 @@ app.get('/api/cars', (req, res) => {
   let where = ' WHERE 1=1';
   const params = [];
 
-  if (brand)       { where += ' AND brand = ?';          params.push(brand); }
-  if (rentalPrice) { where += ' AND rentalPrice <= ?';   params.push(Number(rentalPrice)); }
-  if (minMileage)  { where += ' AND mileage >= ?';       params.push(Number(minMileage)); }
-  if (maxMileage)  { where += ' AND mileage <= ?';       params.push(Number(maxMileage)); }
+  if (brand) { where += ' AND brand = ?'; params.push(brand); }
+  if (rentalPrice) { where += ' AND rentalPrice <= ?'; params.push(Number(rentalPrice)); }
+  if (minMileage) { where += ' AND mileage >= ?'; params.push(Number(minMileage)); }
+  if (maxMileage) { where += ' AND mileage <= ?'; params.push(Number(maxMileage)); }
 
   const totalCars = db.prepare('SELECT COUNT(*) AS n FROM cars' + where).get(...params).n;
   const rows = db
@@ -278,7 +278,7 @@ app.post('/api/bookings', (req, res) => {
     )
     .run(
       Number(carId),
-      req.session.user?.id ?? null, 
+      req.session.user?.id ?? null,
       name.trim(),
       email,
       date || null,
@@ -297,6 +297,72 @@ app.get('/api/me/bookings', requireAuth, (req, res) => {
     )
     .all(req.session.user.id);
   res.json(rows);
+});
+
+const validateCar = b => {
+  if (!b.brand || !b.model) return 'Brand and model are required';
+  if (!Number(b.rentalPrice) || Number(b.rentalPrice) <= 0) return 'Rental price must be a positive number';
+  if (b.year && (Number(b.year) < 1950 || Number(b.year) > 2100)) return 'Invalid year';
+  return null;
+}
+
+const carValues = b => [
+  b.brand.trim(), b.model.trim(), Number(b.year) || null, b.img || '',
+  Number(b.rentalPrice), b.address || '', b.type || '', Number(b.mileage) || 0,
+  b.rentalCompany || '', b.description || '', String(b.fuelConsumption ?? ''),
+  String(b.engineSize ?? ''), asList(b.accessories), asList(b.functionalities),
+  asList(b.rentalConditions),
+]
+
+app.post('/api/admin/cars', requireAdmin, (req, res) => {
+  const error = validateCar(req.body);
+  if (error) return res.status(400).json({ message: error });
+
+  const info = db.prepare(`
+    INSERT INTO cars (brand, model, year, img, rentalPrice, address, type, mileage,
+      rentalCompany, description, fuelConsumption, engineSize,
+      accessories, functionalities, rentalConditions)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(...carValues(req.body));
+
+  res.status(201).json({ id: Number(info.lastInsertRowid) });
+});
+
+app.put('/api/admin/cars/:id', requireAdmin, (req, res) => {
+  const error = validateCar(req.body);
+  if (error) return res.status(400).json({ message: error });
+
+  const info = db.prepare(`
+    UPDATE cars SET brand=?, model=?, year=?, img=?, rentalPrice=?, address=?, type=?,
+      mileage=?, rentalCompany=?, description=?, fuelConsumption=?, engineSize=?,
+      accessories=?, functionalities=?, rentalConditions=?
+    WHERE id = ?
+  `).run(...carValues(req.body), req.params.id);
+
+  if (!info.changes) return res.status(404).json({ message: 'Car not found' });
+  res.json({ message: 'Updated' });
+});
+
+app.delete('/api/admin/cars/:id', requireAdmin, (req, res) => {
+  dbtransaction(() => {
+    db.prepare('DELETE FROM bookings WHERE carId = ?').run(req.params.id);
+    db.prepare('DELETE FROM cars WHERE id = ?').run(req.params.id);
+  })(req.params.id);
+  res.json({ message: 'Deleted' });
+});
+
+app.get('/api/admin/bookings', requireAdmin, (req, res) => {
+  res.json(db.prepare(`
+      SELECT b.id, b.name, b.email, b.date, b.comment, b.createdAt,
+c.brand, c.model, c.year
+      FROM bookings b JOIN cars c ON c.id = b.carId
+      ORDER BY b.id DESC
+    `).all()
+  );
+});
+
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  res.json(db.prepare('SELECT id, name, email, role FROM users ORDER BY id').all());
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
